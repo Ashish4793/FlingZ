@@ -8,8 +8,15 @@ const session = require('express-session')
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const findOrCreate = require('mongoose-findorcreate');
 const User = require("./models/userSchema")
+const meetRouter = require("./zoom/zoom")
 const port = 8000
 const userRouter = require("./routes/userRoutes");
+const chatRouter = require("./routes/chatRoutes")
+const messageRouter = require("./routes/messageRoutes")
+const cors = require('cors');
+const { user } = require('./controller/userController');
+const cron = require('node-cron');
+const algorithm = require("./algorithm/algorithm")
 
 passport.serializeUser(function (user, done) {
     done(null, user);
@@ -20,15 +27,23 @@ passport.deserializeUser(function (obj, done) {
 
 
 const app = express();
+
+cron.schedule('00 09 * * *', algorithm.myTask);
+
+app.use(bodyParser.json({limit:"30mb", extended:true}))
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
+app.use(cors({
+  origin: process.env.ORIGIN,
+  credentials: true,
+}));
 
 app.use(session({
     secret: process.env.SESSION_KEY,
     resave: false,
     saveUninitialized: false,
     cookie: {
-        expires: 6000000
+        expires: 24 * 60 * 60 * 100000
     },
 }));
 
@@ -39,17 +54,45 @@ app.use(passport.session());
 mongoose.set("strictQuery", false);
 
 
+
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: 'http://localhost:8000/auth/google/callback'
+    callbackURL: process.env.CALLBACKURL
 },
-    function (accessToken, refreshToken, profile, cb) {
-        User.findOrCreate({ googleId: profile.id , email : profile.emails[0].value }, function (err, user) {
+      async function (accessToken, refreshToken, profile, cb) {
+         /*User.findOrCreate({ googleId: profile.id , email : profile.emails[0].value, image: profile.photos[0].value, firstname: profile.name.givenName, lastname:profile.name.familyName}, function (err, user) {
+          console.log(err)
+          console.log(user)
             return cb(err, user);
-          });
-    }
+          });*/
+
+
+          try {
+            
+          const existingUser = await User.findOne({ email : profile.emails[0].value });
+          let user
+
+          if (existingUser) {
+              // Update existing user
+              const result = await User.updateOne({ email: profile.emails[0].value }, { $set: { googleId: profile.id , email : profile.emails[0].value, image: profile.photos[0].value, firstname: profile.name.givenName, lastname:profile.name.familyName} });
+              user = await User.findOne({ email: profile.emails[0].value})
+          } else {
+              // Create new user
+              const newUser = new User({
+                googleId: profile.id , email : profile.emails[0].value, image: profile.photos[0].value, firstname: profile.name.givenName, lastname:profile.name.familyName
+            })
+    
+            user = await newUser.save()
+          }
+          return cb(null, user);
+      } catch (err) {
+          console.error('Error:', err);
+      } 
+        }
+  
 ));
+
 
 
 
@@ -60,11 +103,14 @@ app.get('/auth/google',
 app.get('/auth/google/callback', 
   passport.authenticate('google', { failureRedirect: '/login' }),
   function(req, res) {
-    res.redirect('/');
+    res.redirect(`${process.env.ORIGIN}/profile`);
   });
 
  
   app.use("/user", userRouter);
+  app.use("/meet",meetRouter)
+  app.use("/chat",chatRouter)
+  app.use("/message",messageRouter)
 
 
 
